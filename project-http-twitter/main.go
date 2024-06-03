@@ -1,121 +1,53 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
-	"fmt"
-	"io"
 	"log"
 	"net/http"
+	"time"
+	"twitter/server"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/httprate"
 )
 
 func main() {
-	s := server{
-		repository: &tweetMemoryRepository{},
+	r := chi.NewRouter()
+	r.Use(middleware.Logger)
+
+	s := server.Server{
+		Repository: &server.TweetMemoryRepository{},
 	}
 
-	http.HandleFunc("/tweets", s.tweets)
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	go spamTweets()
+
+	r.Get("/tweets", s.ListTweets)
+	r.With(httprate.LimitByIP(10, 1*time.Minute)).Post("/tweets", s.AddTweet)
+
+	log.Fatal(http.ListenAndServe(":8080", r))
 }
 
-type tweet struct {
-	Message  string `json:"message"`
-	Location string `json:"location"`
-}
+func spamTweets() {
+	url := "http://localhost:8080/tweets"
 
-type response struct {
-	ID int `json:"ID"`
-}
+	tw := server.Tweet{
+		Message:  "ass",
+		Location: "ass",
+	}
 
-type listTweetsResponse struct {
-	Tweets []tweet `json:"tweets"`
-}
-
-type tweetRepository interface {
-	Add(u tweet) (int, error)
-	Tweets() ([]tweet, error)
-}
-
-type tweetMemoryRepository struct {
-	tweets []tweet
-}
-
-func (r *tweetMemoryRepository) Add(tw tweet) (int, error) {
-	r.tweets = append(r.tweets, tw)
-	return len(r.tweets), nil
-}
-
-func (r *tweetMemoryRepository) Tweets() ([]tweet, error) {
-	return r.tweets, nil
-}
-
-type server struct {
-	repository tweetRepository
-}
-
-func (s server) addTweet(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	payload, err := json.Marshal(tw)
 	if err != nil {
-		log.Println("Failed to read body: ", err)
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	defer r.Body.Close()
-
-	tw := tweet{}
-
-	if err := json.Unmarshal(body, &tw); err != nil {
-		log.Println("Failed to unmarshal payload: ", err)
-		w.WriteHeader(http.StatusBadRequest)
+		log.Println("Error marshal")
 		return
 	}
 
-	if tw.Message == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	fmt.Printf("Tweet: `%s` from %s\n", tw.Message, tw.Location)
-
-	id, err := s.repository.Add(tw)
-	if err != nil {
-		log.Println("Failed to create tweet: ", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	resp := response{ID: id}
-
-	respJSON, err := json.Marshal(resp)
-	if err != nil {
-		log.Println("Failed to marshal: ", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	id++
-	w.Write(respJSON)
-}
-
-func (s server) listTweets(w http.ResponseWriter, r *http.Request) {
-	tweets, err := s.repository.Tweets()
-
-	resp := listTweetsResponse{
-		Tweets: tweets,
-	}
-
-	respJSON, err := json.Marshal(resp)
-	if err != nil {
-		log.Println("Failed to marshal tweets: ", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	w.Write(respJSON)
-}
-
-func (s server) tweets(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodPost {
-		s.addTweet(w, r)
-	} else if r.Method == http.MethodGet {
-		s.listTweets(w, r)
+	for {
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(payload))
+		if err != nil {
+			return
+		}
+		defer resp.Body.Close()
 	}
 }
